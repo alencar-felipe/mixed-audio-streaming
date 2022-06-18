@@ -246,6 +246,7 @@ def play_thread(sample_rate, blocksize, queue):
             sleep(0.01)
 
 # MDCT ========================================================================#
+# https://github.com/smagt/mdct
 
 def mdct4(x):
     N = x.shape[0]
