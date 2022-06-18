@@ -196,7 +196,7 @@ def client_main(addr: tuple[str, int], audio_file: str, part_size: int,
                 lossy_parts.remove(part)
 
             # remove parts that arrived late and wont be used
-            parts = [part for part in lossy_parts if part['index'] == index]
+            parts = [part for part in lossy_parts if part['index'] < index]
             for part in parts:
                 lossy_parts.remove(part)
 
@@ -216,15 +216,22 @@ def client_main(addr: tuple[str, int], audio_file: str, part_size: int,
         raise e
         logging.error(str(e))
 
-    logging.info('Ending client')
+    running = False
+    logging.info('Closing client')
     tcp.close()
     udp.close()
 
 def udp_thread(udp, buflen, lossy_parts):
+    udp.setblocking(0)
     while running:
-        data, addr = udp.recvfrom(buflen)
-        part = msgpack.unpackb(data)
-        lossy_parts.append(part) # thread safe operation
+        try:
+            data, addr = udp.recvfrom(buflen)
+            part = msgpack.unpackb(data)
+            lossy_parts.append(part) # thread safe operation
+        except BlockingIOError as e:
+            sleep(0.01)
+
+    logging.info('Closing udp_thread')
 
 def play_thread(sample_rate, blocksize, queue):
     global running
@@ -235,15 +242,17 @@ def play_thread(sample_rate, blocksize, queue):
         data = queue.get()
         outdata[:] = data.reshape((-1, 1))
 
-    stream = sd.OutputStream(samplerate=sample_rate,
-                            channels=1,
-                            callback=callback,
-                            blocksize=blocksize,
-                            finished_callback=event.set)
+        if not running:
+            raise sd.CallbackAbort
+
+    stream = sd.OutputStream(samplerate=sample_rate, channels=1,
+        callback=callback, blocksize=blocksize, finished_callback=event.set)
 
     with stream:
         while not event.is_set() and running:
             sleep(0.01)
+
+    logging.info('Closing play_thread')
 
 # MDCT ========================================================================#
 # https://github.com/smagt/mdct
@@ -409,14 +418,14 @@ if __name__ == "__main__":
     client.add_argument('--part_size', '-s', dest='part_size',
         default='500', type=int, metavar='<part size>')
 
-    client.add_argument('--parts_in_windows', '-w', dest='parts_in_window',
-        default='40', type=int, metavar='<parts in window>')
+    client.add_argument('--parts_in_window', '-w', dest='parts_in_window',
+        default='50', type=int, metavar='<parts in window>')
 
     client.add_argument('--mid_start', '-b', dest='mid_start',
-        default='10', type=int, metavar='<mid start>')
+        default='0', type=int, metavar='<mid start>')
 
     client.add_argument('--mid_end', '-e', dest='mid_end',
-        default='20', type=int, metavar='<mid end>')
+        default='10', type=int, metavar='<mid end>')
 
     # Parse arguments =========================================================#
 
