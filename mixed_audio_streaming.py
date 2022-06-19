@@ -14,25 +14,42 @@ from scipy.io import wavfile
 from threading import Thread, Event
 from time import sleep, time
 
+# if False, all threads should stop
 running = True
 
 # Server ======================================================================#
 
 def server_main(addr: tuple[str, int], max_clients: int):
+    """
+    Server main function
+
+    Parameters
+    ----------
+    addr : (str, int)
+        a (host, port) pair, where  host is a string representing either a
+        hostname or an IPv4 address and port is an integer
+    
+    max_clients : int
+        the maximum number of simultaneous clients
+    """
+
     global running
 
     logging.info(f'Starting server on: {addr}')
 
+    # creates socket object
     tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
     # allow port reuse
     tcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1) 
 
+    # listen of specified port
     tcp.bind(addr)
     tcp.listen(max_clients)
 
     threads = []
 
+    # accept clients while running
     try:
         while running:
             client, addr = tcp.accept()
@@ -45,16 +62,30 @@ def server_main(addr: tuple[str, int], max_clients: int):
         running = False
 
 def client_thread(client, addr):
+    """
+    Target function for the threads that handle clients
+
+    Parameters
+    ----------
+    client : socket
+        The client socket
+    
+    addr : (str, int)
+        The client address
+    """
+
     global running
 
     logging.info(f'{addr}: Starting client thread')
 
+    # creates udp socket object
     udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
     try:
+        # creates iterator for incoming msgpack data
         unpacker = tcp_unpaker(client)
 
-        # Receive client header
+        # receive client header
         h = next(unpacker)
         audio_file = h['audio_file']
         udp_port = h['udp_port']
@@ -63,26 +94,31 @@ def client_thread(client, addr):
         mid_start = h['mid_start']
         mid_end = h['mid_end']
 
+        # check if file is in project subfolder and is an wav file
         if not is_legal_audio_file(audio_file):
             raise RuntimeError('Ilegal audio file')
 
+        # Load audio samples into memory
         sample_rate, samples = wavfile.read(audio_file)
 
         # normalize audio
         samples = normalize(samples)
 
-        # Send server header
+        # send server header
         client.send(msgpack.packb({
             'sample_rate': sample_rate
         }))
 
+        # calculates discrete cossine transform window size 
         win2 = part_size * parts_in_window
         win = win2 * 2
 
+        # loop through audio sending data
         index = 0
         start = time()
         for k in range(0, len(samples) - win, win2):
             
+            # stops if necessary
             if not running:
                 break
             
@@ -121,17 +157,43 @@ def client_thread(client, addr):
     except Exception as e:
         logging.error(f'{addr}: {str(e)}')
 
-    logging.info(f'{addr}: Ending client thread')
+    logging.info(f'{addr}: Closing client thread')
     client.close()
 
 # Client ======================================================================#
 
 def client_main(addr: tuple[str, int], audio_file: str, part_size: int,
     parts_in_window: int, mid_start: int, mid_end: int):
+    """
+    Client main function
+
+    Parameters
+    ----------
+    addr : (str, int)
+        a (host, port) pair, where  host is a string representing either a
+        hostname or an IPv4 address and port is an integer
+    
+    audio_file : str
+        relative location of file in remote server
+
+    part_size : int
+        size of the spectrum slice that each udp packet will carry
+
+    parts_in_window : int
+        number of spectrum slices in a window
+
+    mid_start : int
+        index to beggining of medium frequencies slices
+
+    mid_end : int
+        index to end of medium frequencies slices
+    """
+
     global running
 
     logging.info(f'Starting client')
     
+    # creates both socket objects
     tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
@@ -158,22 +220,30 @@ def client_main(addr: tuple[str, int], audio_file: str, part_size: int,
         h = next(unpacker)
         sample_rate = h['sample_rate']
 
+        # calculates discrete cossine transform window size 
         win2 = part_size * parts_in_window
         win = win2 * 2
 
+        # creates thread that receives udp packets
         lossy_parts = []
         thread1 = Thread(target=udp_thread,args=(udp, 1024, lossy_parts))
         thread1.start()
 
+        # creates thread that actually plays the samples
         queue = SimpleQueue()
         thread2 = Thread(target=play_thread,args=(sample_rate, win2, queue))
         thread2.start()
 
+        # helper variable
         mid_size = mid_end - mid_start
+        
+        # mdct madness
         last_z = np.zeros(win)
 
+        # loop through incoming msgpack data (TCP)
         for unpacked in unpacker:
             
+            # stops if necessary
             if not running:
                 break
             
@@ -216,13 +286,31 @@ def client_main(addr: tuple[str, int], audio_file: str, part_size: int,
         raise e
         logging.error(str(e))
 
-    running = False
     logging.info('Closing client')
+    running = False
     tcp.close()
     udp.close()
 
 def udp_thread(udp, buflen, lossy_parts):
+    """
+    Target function for thread that receives udp packets
+
+    Parameters
+    ----------
+    udp : socket
+        socket for incoming UDP packets
+    
+    buflen : int
+        max size of UDP packet
+
+    lossy_parts: list
+        list that stores udp packets
+    """
+
+    # enable non-blocking mode
     udp.setblocking(0)
+
+    # receives packets while running
     while running:
         try:
             data, addr = udp.recvfrom(buflen)
@@ -234,6 +322,21 @@ def udp_thread(udp, buflen, lossy_parts):
     logging.info('Closing udp_thread')
 
 def play_thread(sample_rate, blocksize, queue):
+    """
+    Target function for thread that plays audio samples
+
+    Parameters
+    ----------
+    sample_rate : int
+        sample rate
+
+    blocksize : int
+        size of each element in queue
+
+    queue: SimpleQueue
+        queue for blocks of audio samples
+    """
+
     global running
 
     event = Event()
@@ -310,19 +413,57 @@ def imdct4(x):
 # Common ======================================================================#
 
 def normalize(array):
+    """
+    normalizes numpy array
+
+    Parameters
+    ----------
+    array : numpy.ndarray
+        array to be normalized
+    """
+
     return array / np.max(np.abs(array))
 
-def np_encode(data):
-    return data.astype(np.float16).tobytes()
+def np_encode(array):
+    """
+    encodes numpy array to bytes
+
+    Parameters
+    ----------
+    array : numpy.ndarray
+        array to be encoded
+    """
+
+    return array.astype(np.float16).tobytes()
 
 def np_decode(buf):
+    """
+    decodes numpy array from bytes
+
+    Parameters
+    ----------
+    buf : bytearray
+        bytes to be decoded
+    """
+
     return np.frombuffer(buf, dtype=np.float16).astype(np.float64)
 
 def tcp_unpaker(sock):
+    """
+    iterates incoming msgpack data from TCP stream 
+
+    Parameters
+    ----------
+    sock : socket
+        TCP socket
+    """
+
     global running
 
+    # creates msgpack unpacker
     unpacker = msgpack.Unpacker()
 
+    # feeds unpacker with incoming TCP data
     while running:
         try:
             data = sock.recv(1024)
@@ -336,17 +477,34 @@ def tcp_unpaker(sock):
 
         sleep(0.001)
 
-def is_legal_audio_file(audio_file): 
+def is_legal_audio_file(audio_file):
+    """
+    check if file is in project subfolder and is an wav file
+
+    Parameters
+    ----------
+    audio_file : str
+        audio_file path
+    """
+
+    # check if file is in project subfolder
     rel = os.path.relpath(audio_file)
     if rel.startswith('..'):
         return False
 
+    # check if file is an wav file
     if Path(audio_file).suffix != '.wav':
         return False
 
     return True
 
 class CustomFormatter(logging.Formatter):
+    """
+        logging formatter that colors output
+
+        https://stackoverflow.com/questions/384076/
+    """
+
     grey = "\x1b[38;20m"
     yellow = "\x1b[33;20m"
     red = "\x1b[31;20m"
