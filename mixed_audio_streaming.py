@@ -142,7 +142,7 @@ def client_thread(client, addr):
             }), (addr[0], udp_port))
 
             # waits in order not to overfeed the client
-            while time() + 5 < start + k*(1/sample_rate):
+            while time() + 1 < start + k*(1/sample_rate):
                 sleep(0.01)
 
             # lossless (TCP transmission)
@@ -348,6 +348,9 @@ def play_thread(sample_rate, blocksize, samples):
             raise sd.CallbackAbort
 
         data = samples.get_nowait()
+
+        #while not samples.empty():
+        #    samples.get_nowait()
 
         outdata[:] = data.reshape((-1, 1))
 
