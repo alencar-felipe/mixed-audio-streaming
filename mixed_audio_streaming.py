@@ -9,7 +9,7 @@ import socket
 import sounddevice as sd
 
 from pathlib import Path
-from queue import SimpleQueue
+from queue import SimpleQueue, Empty
 from scipy.io import wavfile
 from threading import Thread, Event
 from time import sleep, time
@@ -242,7 +242,6 @@ def client_main(addr: tuple[str, int], audio_file: str, part_size: int,
 
         # loop through incoming msgpack data (TCP)
         for unpacked in unpacker:
-            
             # stops if necessary
             if not running:
                 break
@@ -321,7 +320,7 @@ def udp_thread(udp, buflen, lossy_parts):
 
     logging.info('Closing udp_thread')
 
-def play_thread(sample_rate, blocksize, queue):
+def play_thread(sample_rate, blocksize, samples):
     """
     Target function for thread that plays audio samples
 
@@ -333,7 +332,7 @@ def play_thread(sample_rate, blocksize, queue):
     blocksize : int
         size of each element in queue
 
-    queue: SimpleQueue
+    samples: SimpleQueue
         queue for blocks of audio samples
     """
 
@@ -342,11 +341,15 @@ def play_thread(sample_rate, blocksize, queue):
     event = Event()
 
     def callback(outdata, frames, time, status):
-        data = queue.get()
-        outdata[:] = data.reshape((-1, 1))
+        while samples.empty() and running:
+            sleep(0.01)
 
         if not running:
             raise sd.CallbackAbort
+
+        data = samples.get_nowait()
+
+        outdata[:] = data.reshape((-1, 1))
 
     stream = sd.OutputStream(samplerate=sample_rate, channels=1,
         callback=callback, blocksize=blocksize, finished_callback=event.set)
